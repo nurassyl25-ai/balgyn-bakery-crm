@@ -130,7 +130,7 @@ export default function BalgynBakeryCRM() {
 
   const role = currentUser.role;
 
-  if (loading) {
+  if (loading || !clients || !orders) {
     return (
       <div className="min-h-screen bg-[#FBF3EC] flex items-center justify-center">
         <Loader2 className="w-6 h-6 text-rose-500 animate-spin" />
