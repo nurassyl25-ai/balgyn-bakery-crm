@@ -6,7 +6,21 @@
     <title>Balgyn Bakery CRM</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">Загрузка…</div>
+    <div id="crash-overlay" style="display:none; position:fixed; inset:0; background:#fff; color:#b00020; font-family:monospace; font-size:13px; padding:16px; overflow:auto; white-space:pre-wrap; z-index:99999;"></div>
+    <script>
+      function showCrash(msg) {
+        var el = document.getElementById('crash-overlay');
+        el.style.display = 'block';
+        el.textContent = 'ОШИБКА ЗАГРУЗКИ СТРАНИЦЫ:\n\n' + msg;
+      }
+      window.addEventListener('error', function (e) {
+        showCrash((e.message || 'unknown error') + '\n' + (e.filename || '') + ':' + (e.lineno || '') );
+      });
+      window.addEventListener('unhandledrejection', function (e) {
+        showCrash('Promise rejection: ' + (e.reason && e.reason.message ? e.reason.message : JSON.stringify(e.reason)));
+      });
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
