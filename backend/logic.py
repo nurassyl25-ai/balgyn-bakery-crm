@@ -14,6 +14,7 @@
 """
 
 from datetime import date, datetime, timedelta
+from order_config import TERMINAL_STAGES, STAGE_LABELS
 
 # ---------- настройки, которые чаще всего меняют ----------
 STALE_DAYS = 3              # заказ без движения дольше — считается "зависшим"
@@ -34,10 +35,12 @@ def compute_order_status(order: dict) -> dict:
     Возвращает статус заказа: {"key": ..., "label": ..., "tone": ...}
     tone используется фронтендом для подсветки цветом:
     "overdue" (просрочен), "today" (сегодня), "soon" (скоро),
-    "ok" (в порядке), "done" (завершён)
+    "ok" (в порядке), "done" (продано), "rejected" (отказ)
     """
-    if order["stage"] == "completed":
-        return {"key": "done", "label": "Завершён", "tone": "done"}
+    if order["stage"] == "rejected":
+        return {"key": "rejected", "label": "Отказ", "tone": "rejected"}
+    if order["stage"] in TERMINAL_STAGES:
+        return {"key": "done", "label": STAGE_LABELS.get(order["stage"], "Продано"), "tone": "done"}
 
     due_date = _parse_date(order["due_date"])
     today = date.today()
@@ -69,7 +72,7 @@ def days_to_next_birthday(birthday: str | None) -> int | None:
 
 def is_stale(order: dict) -> bool:
     """Заказ считается "зависшим", если не двигался по этапам дольше STALE_DAYS."""
-    if order["stage"] == "completed":
+    if order["stage"] in TERMINAL_STAGES:
         return False
     changed_raw = order.get("stage_changed_at") or order["created_at"]
     changed = _parse_date(changed_raw)
@@ -105,7 +108,8 @@ def seed_demo_data(db, models, new_id, today_iso):
             product="Торт «Шоколадный трюфель», 2 кг", product_type="Торт на заказ", size="2 кг",
             filling="Шоколад, без орехов", price=22000, prepaid=10000, fulfillment="Доставка",
             address="Проспект Туран, 42, Астана", due_date=today.isoformat(), due_time="18:00",
-            comment="Надпись «С Днём рождения, Айгерим!»", stage="production",
+            comment="Надпись «С Днём рождения, Айгерим!»", order_type="custom", stage="cooking",
+            inscription="С Днём рождения, Айгерим!", responsible_manager="",
             created_at=(today - timedelta(days=2)).isoformat(),
             stage_changed_at=(today - timedelta(days=1)).isoformat(),
         ),
@@ -114,7 +118,8 @@ def seed_demo_data(db, models, new_id, today_iso):
             product="Капкейки ассорти, 24 шт", product_type="Капкейки", size="24 шт",
             filling="Ассорти вкусов", price=18000, prepaid=18000, fulfillment="Доставка",
             address="Улица Кенесары, 20, офис 305, Астана", due_date=(today + timedelta(days=1)).isoformat(),
-            due_time="12:00", comment="Для корпоратива, коробка с логотипом", stage="ready",
+            due_time="12:00", comment="Для корпоратива, коробка с логотипом", order_type="ready",
+            stage="payment_pending", responsible_manager="",
             created_at=(today - timedelta(days=3)).isoformat(),
             stage_changed_at=(today - timedelta(days=1)).isoformat(),
         ),
@@ -123,7 +128,8 @@ def seed_demo_data(db, models, new_id, today_iso):
             product="Торт «Медовик», 1.5 кг", product_type="Торт на заказ", size="1.5 кг",
             filling="Мёд-сметана", price=15000, prepaid=0, fulfillment="Самовывоз", address="",
             due_date=(today - timedelta(days=1)).isoformat(), due_time="17:00",
-            comment="Уже должен быть готов — уточнить у клиента", stage="new",
+            comment="Уже должен быть готов — уточнить у клиента", order_type="ready", stage="new",
+            responsible_manager="",
             created_at=(today - timedelta(days=6)).isoformat(),
             stage_changed_at=(today - timedelta(days=6)).isoformat(),
         ),
@@ -132,7 +138,7 @@ def seed_demo_data(db, models, new_id, today_iso):
             product="Печенье на палочке, 30 шт", product_type="Печенье", size="30 шт",
             filling="Ванильное", price=12000, prepaid=12000, fulfillment="Самовывоз", address="",
             due_date=(today - timedelta(days=10)).isoformat(), due_time="15:00",
-            comment="Детский день рождения", stage="completed",
+            comment="Детский день рождения", order_type="ready", stage="sold", responsible_manager="",
             created_at=(today - timedelta(days=12)).isoformat(),
             stage_changed_at=(today - timedelta(days=10)).isoformat(),
         ),
