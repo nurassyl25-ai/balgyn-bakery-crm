@@ -36,6 +36,22 @@ class Order(Base):
     created_at = Column(String)
     stage_changed_at = Column(String)
 
+    # ---- новые поля ----
+    order_type = Column(String, default="ready")  # "ready" | "custom"
+    responsible_manager = Column(String, default="")
+
+    # поля только для order_type == "custom"
+    event_date = Column(String, default="")
+    design = Column(String, default="")
+    inscription = Column(String, default="")
+    reference_photo_url = Column(String, default="")
+    client_wishes = Column(String, default="")
+
+    # причина отказа
+    rejection_reason = Column(String, default="")
+    rejection_comment = Column(String, default="")
+    rejected_at = Column(String, default="")
+
 
 class User(Base):
     __tablename__ = "users"
@@ -44,4 +60,28 @@ class User(Base):
     username = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     full_name = Column(String, default="")
-    role = Column(String, default="manager")  # "manager" | "operator"
+    role = Column(String, default="manager")  # "manager" | "rop" | "director"
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, default="")
+    phone = Column(String, default="")  # используется как chatId для сопоставления с Wazzup
+    channel = Column(String, default="whatsapp")  # whatsapp | instagram | call | other
+    stage = Column(String, default="new")  # new | chatting | agreed | converted
+    last_message = Column(String, default="")
+    last_message_at = Column(String, default="")
+    client_id = Column(String, default="")  # заполняется при конвертации в клиента
+    created_at = Column(String)
+
+
+class LeadMessage(Base):
+    __tablename__ = "lead_messages"
+
+    id = Column(String, primary_key=True, index=True)
+    lead_id = Column(String, nullable=False)
+    direction = Column(String, default="in")  # "in" (от клиента) | "out" (наш ответ)
+    text = Column(String, default="")
+    created_at = Column(String)
