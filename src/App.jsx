@@ -1,19 +1,15 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
-  Cake, Gift, Truck, Store, Clock, Plus, X, MapPin, Calendar, ChevronRight,
-  Copy, Check, Phone, ArrowRight, Trash2, Loader2, AlertCircle, CheckCircle2,
-  Circle, TrendingUp, ClipboardList, User
+  Cake, Gift, Truck, Store, Clock, Plus, X, MapPin, Calendar,
+  Check, Phone, Trash2, Loader2, AlertCircle, CheckCircle2,
+  Circle, TrendingUp, ClipboardList, User, Search, MessageCircle, Ban
 } from "lucide-react";
+import {
+  ORDER_TYPES, orderTypeLabel, STAGE_LABELS, TERMINAL_STAGES, KANBAN_STAGE_ORDER,
+  REJECTION_REASONS, getAvailableStages, STAGE_COLORS,
+} from "./orderConfig.js";
 
 // ---------- constants ----------
-const ORDER_STAGES = [
-  { id: "new", label: "Новый заказ" },
-  { id: "prepaid", label: "Предоплата получена" },
-  { id: "production", label: "Готовится" },
-  { id: "ready", label: "Готов к выдаче" },
-  { id: "completed", label: "Выдан / Доставлен" },
-];
-
 const PRODUCT_TYPES = ["Торт на заказ", "Капкейки", "Десерты", "Печенье", "Другое"];
 const FULFILLMENT_TYPES = ["Самовывоз", "Доставка"];
 const CLIENT_FILTERS = [
@@ -21,6 +17,18 @@ const CLIENT_FILTERS = [
   { id: "repeat", label: "Постоянные" },
   { id: "new", label: "Новые" },
   { id: "birthday", label: "ДР скоро" },
+];
+const ORDER_FILTERS = [
+  { id: "all", label: "Все" },
+  { id: "today", label: "Сегодня" },
+  { id: "tomorrow", label: "Завтра" },
+  { id: "overdue", label: "Просроченные" },
+  { id: "ready", label: "Готовые товары" },
+  { id: "custom", label: "На заказ" },
+  { id: "pickup", label: "Самовывоз" },
+  { id: "delivery", label: "Доставка" },
+  { id: "sold", label: "Продано" },
+  { id: "rejected", label: "Отказ" },
 ];
 const ROLES = [
   { id: "manager", label: "Менеджер" },
@@ -31,6 +39,7 @@ const roleLabel = (r) => ROLES.find(x => x.id === r)?.label || r;
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const tomorrowISO = () => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
 const fmtDate = (iso) => {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -41,9 +50,12 @@ const fmtDateShort = (iso) => {
   const d = new Date(iso);
   return d.toLocaleDateString("ru-RU", { day: "2-digit", month: "short" });
 };
-const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 86400000);
 const fmtMoney = (n) => new Intl.NumberFormat("ru-RU").format(n || 0) + " ₸";
-const STALE_DAYS = 3;
+const waLink = (phone, text) => {
+  const digits = (phone || "").replace(/[^\d]/g, "");
+  const msg = text ? `?text=${encodeURIComponent(text)}` : "";
+  return `https://wa.me/${digits}${msg}`;
+};
 
 const TONE_STYLES = {
   overdue: "text-rose-700 bg-rose-50 border-rose-200",
@@ -51,10 +63,12 @@ const TONE_STYLES = {
   soon: "text-amber-700 bg-amber-50 border-amber-200",
   ok: "text-emerald-700 bg-emerald-50 border-emerald-200",
   done: "text-slate-500 bg-slate-50 border-slate-200",
+  rejected: "text-slate-500 bg-slate-100 border-slate-300",
 };
 
 function StatusIcon({ tone, className }) {
   if (tone === "overdue") return <AlertCircle className={className} />;
+  if (tone === "rejected") return <Ban className={className} />;
   if (tone === "done") return <CheckCircle2 className={className} />;
   if (tone === "today" || tone === "soon") return <Clock className={className} />;
   return <Circle className={className} />;
@@ -155,8 +169,11 @@ export default function BalgynBakeryCRM() {
   // ---------- derived ----------
   const overdue = orders.filter(o => o.status.tone === "overdue");
   const dueToday = orders.filter(o => o.status.tone === "today");
-  const activeOrders = orders.filter(o => o.stage !== "completed");
-  const staleOrders = orders.filter(o => o.stage !== "completed" && daysBetween(o.stageChangedAt || o.createdAt, new Date().toISOString().slice(0,10)) > STALE_DAYS);
+  const newOrders = orders.filter(o => o.stage === "new");
+  const paymentPending = orders.filter(o => o.stage === "payment_pending");
+  const soldToday = orders.filter(o => o.stage === "sold" && o.stageChangedAt === todayISO());
+  const salesTodaySum = soldToday.reduce((acc, o) => acc + (o.price || 0), 0);
+  const activeOrders = orders.filter(o => !TERMINAL_STAGES.includes(o.stage));
   const upcomingBirthdays = clients
     .filter(c => c.daysToBirthday !== null && c.daysToBirthday !== undefined && c.daysToBirthday <= 7)
     .sort((a, b) => a.daysToBirthday - b.daysToBirthday);
@@ -172,28 +189,23 @@ export default function BalgynBakeryCRM() {
       showToast("Не удалось создать заказ");
     }
   };
-  const moveOrder = async (id, dir) => {
-    const order = orders.find(o => o.id === id);
-    if (!order) return;
-    const idx = ORDER_STAGES.findIndex(s => s.id === order.stage);
-    const nextIdx = Math.min(Math.max(idx + dir, 0), ORDER_STAGES.length - 1);
-    const nextStage = ORDER_STAGES[nextIdx].id;
+  const setOrderStage = async (id, nextStage) => {
     try {
       const updated = await api.updateOrder(id, { stage: nextStage });
       setOrders(prev => prev.map(o => o.id === id ? updated : o));
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error(e); showToast("Не удалось изменить статус"); }
+  };
+  const rejectOrder = async (id, reason, comment) => {
+    try {
+      const updated = await api.rejectOrder(id, reason, comment);
+      setOrders(prev => prev.map(o => o.id === id ? updated : o));
+      showToast("Заказ переведён в отказ");
+    } catch (e) { console.error(e); showToast("Не удалось оформить отказ"); }
   };
   const deleteOrder = async (id) => {
     try {
       await api.deleteOrder(id);
       setOrders(prev => prev.filter(o => o.id !== id));
-    } catch (e) { console.error(e); }
-  };
-  const markDelivered = async (id) => {
-    try {
-      const updated = await api.updateOrder(id, { stage: "completed" });
-      setOrders(prev => prev.map(o => o.id === id ? updated : o));
-      showToast("Отмечено как выдано");
     } catch (e) { console.error(e); }
   };
 
@@ -234,7 +246,7 @@ export default function BalgynBakeryCRM() {
             <nav className="flex gap-1 bg-white border border-[#F0DFCF] rounded-xl p-1">
               {[
                 { id: "dashboard", label: "Обзор" },
-                { id: "orders", label: "Заказы" },
+                { id: "orders", label: "Продажи" },
                 { id: "deliveries", label: "Доставки" },
                 { id: "clients", label: "Клиенты" },
                 ...(role === "director" ? [{ id: "employees", label: "Сотрудники" }] : []),
@@ -258,13 +270,15 @@ export default function BalgynBakeryCRM() {
       <main className="max-w-6xl mx-auto px-5 py-8">
         {tab === "dashboard" && (
           <Dashboard overdue={overdue} dueToday={dueToday} orders={orders} clients={clients} activeOrders={activeOrders}
-            staleOrders={staleOrders} upcomingBirthdays={upcomingBirthdays} setTab={setTab} role={role} />
+            newOrders={newOrders} paymentPending={paymentPending} soldToday={soldToday} salesTodaySum={salesTodaySum}
+            upcomingBirthdays={upcomingBirthdays} setTab={setTab} role={role} />
         )}
         {tab === "orders" && (
-          <OrdersBoard orders={orders} clients={clients} addOrder={addOrder} moveOrder={moveOrder} deleteOrder={deleteOrder} />
+          <OrdersBoard orders={orders} clients={clients} addOrder={addOrder} setOrderStage={setOrderStage}
+            rejectOrder={rejectOrder} deleteOrder={deleteOrder} />
         )}
         {tab === "deliveries" && (
-          <DeliveriesView orders={orders} markDelivered={markDelivered} />
+          <DeliveriesView orders={orders} setOrderStage={setOrderStage} />
         )}
         {tab === "clients" && (
           <ClientsView clients={clients} orders={orders} updateClient={updateClient} deleteClient={deleteClient} showToast={showToast} />
@@ -284,32 +298,35 @@ export default function BalgynBakeryCRM() {
 }
 
 // ================= Dashboard =================
-function Dashboard({ overdue, dueToday, orders, clients, activeOrders, staleOrders, upcomingBirthdays, setTab, role }) {
-  const stageCounts = ORDER_STAGES.map(s => ({
-    ...s,
-    count: orders.filter(o => o.stage === s.id).length,
-    sum: orders.filter(o => o.stage === s.id).reduce((acc, o) => acc + (o.price || 0), 0),
+function Dashboard({ overdue, dueToday, orders, clients, activeOrders, newOrders, paymentPending, soldToday, salesTodaySum, upcomingBirthdays, setTab, role }) {
+  const stageCounts = KANBAN_STAGE_ORDER.map(stageId => ({
+    id: stageId,
+    label: STAGE_LABELS[stageId],
+    count: orders.filter(o => o.stage === stageId).length,
+    sum: orders.filter(o => o.stage === stageId).reduce((acc, o) => acc + (o.price || 0), 0),
   }));
   const totalActiveValue = activeOrders.reduce((acc, o) => acc + (o.price || 0), 0);
 
   return (
     <div>
       <h1 className="font-display text-2xl font-semibold mb-1">Обзор</h1>
-      <p className="text-[#8B6F5C] text-sm mb-6">Состояние заказов и доставок на сегодня, {fmtDate(todayISO())}</p>
+      <p className="text-[#8B6F5C] text-sm mb-6">Состояние продаж и доставок на сегодня, {fmtDate(todayISO())}</p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
-        <StatCard label="Активных заказов" value={activeOrders.length} tone="rose" icon={ClipboardList} onClick={() => setTab("orders")} />
-        <StatCard label="Готово/доставка сегодня" value={dueToday.length} tone="amber" icon={Clock} onClick={() => setTab("deliveries")} />
+        <StatCard label="Новые заявки" value={newOrders.length} tone="sky" icon={ClipboardList} onClick={() => setTab("orders")} />
+        <StatCard label="Ожидают оплату" value={paymentPending.length} tone="amber" icon={Clock} onClick={() => setTab("orders")} />
+        <StatCard label="Продано сегодня" value={soldToday.length} tone="emerald" icon={CheckCircle2} onClick={() => setTab("orders")} />
         <StatCard label="Просрочено" value={overdue.length} tone="overdue" icon={AlertCircle} onClick={() => setTab("orders")} />
+        <StatCard label="Сумма продаж сегодня" value={fmtMoney(salesTodaySum)} tone="rose" icon={TrendingUp} onClick={() => setTab("orders")} />
+        <StatCard label="Активные продажи" value={activeOrders.length} tone="teal" icon={ClipboardList} onClick={() => setTab("orders")} />
         <StatCard label="Клиентов" value={clients.length} tone="teal" icon={User} onClick={() => setTab("clients")} />
         <StatCard label="Дни рождения (7 дн.)" value={upcomingBirthdays.length} tone="gold" icon={Gift} onClick={() => setTab("clients")} />
-        <StatCard label="Зависших заказов" value={staleOrders.length} tone="amber" icon={ClipboardList} onClick={() => setTab("orders")} />
       </div>
 
       <div className="grid md:grid-cols-2 gap-5">
         <div className="bg-white border border-[#F0DFCF] rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="font-display font-semibold text-sm text-[#8B6F5C] uppercase tracking-wide">Заказы по этапам</h2>
+              <h2 className="font-display font-semibold text-sm text-[#8B6F5C] uppercase tracking-wide">Продажи по этапам</h2>
               <span className="text-xs text-[#8B6F5C]">В работе: <span className="text-rose-600 font-medium">{fmtMoney(totalActiveValue)}</span></span>
             </div>
             <div className="space-y-2.5">
@@ -366,6 +383,8 @@ function StatCard({ label, value, tone, icon: Icon, onClick }) {
   const tones = {
     rose: "text-rose-700 bg-rose-50 border-rose-200",
     teal: "text-teal-700 bg-teal-50 border-teal-200",
+    sky: "text-sky-700 bg-sky-50 border-sky-200",
+    emerald: "text-emerald-700 bg-emerald-50 border-emerald-200",
     overdue: "text-red-700 bg-red-50 border-red-200",
     amber: "text-amber-700 bg-amber-50 border-amber-200",
     gold: "text-amber-800 bg-amber-100 border-amber-300",
@@ -380,14 +399,23 @@ function StatCard({ label, value, tone, icon: Icon, onClick }) {
 }
 
 // ================= Orders board =================
-function OrdersBoard({ orders, clients, addOrder, moveOrder, deleteOrder }) {
-  const [showForm, setShowForm] = useState(false);
-  const [useExisting, setUseExisting] = useState(true);
-  const [form, setForm] = useState({
+function emptyOrderForm(clients) {
+  return {
     clientId: clients[0]?.id || "", newClientName: "", newClientPhone: "",
+    orderType: "ready",
     product: "", productType: PRODUCT_TYPES[0], size: "", filling: "", price: "", prepaid: "",
     fulfillment: FULFILLMENT_TYPES[0], address: "", dueDate: todayISO(), dueTime: "12:00", comment: "",
-  });
+    responsibleManager: "", eventDate: "", design: "", inscription: "", referencePhotoUrl: "", clientWishes: "",
+  };
+}
+
+function OrdersBoard({ orders, clients, addOrder, setOrderStage, rejectOrder, deleteOrder }) {
+  const [showForm, setShowForm] = useState(false);
+  const [useExisting, setUseExisting] = useState(true);
+  const [form, setForm] = useState(() => emptyOrderForm(clients));
+  const [search, setSearch] = useState("");
+  const [activeFilters, setActiveFilters] = useState(new Set(["all"]));
+  const [rejectingOrder, setRejectingOrder] = useState(null);
 
   const submit = (e) => {
     e.preventDefault();
@@ -395,25 +423,69 @@ function OrdersBoard({ orders, clients, addOrder, moveOrder, deleteOrder }) {
     if (useExisting && !form.clientId) return;
     if (!useExisting && !form.newClientName.trim()) return;
     addOrder({ ...form, clientId: useExisting ? form.clientId : null });
-    setForm(f => ({ ...f, product: "", size: "", filling: "", price: "", prepaid: "", address: "", comment: "", newClientName: "", newClientPhone: "" }));
+    setForm(emptyOrderForm(clients));
     setShowForm(false);
   };
 
+  const toggleFilter = (id) => {
+    setActiveFilters(prev => {
+      if (id === "all") return new Set(["all"]);
+      const next = new Set(prev);
+      next.delete("all");
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next.size === 0 ? new Set(["all"]) : next;
+    });
+  };
+
+  const matchesFilters = (o) => {
+    if (activeFilters.has("all")) return true;
+    for (const f of activeFilters) {
+      if (f === "today" && o.dueDate !== todayISO()) return false;
+      if (f === "tomorrow" && o.dueDate !== tomorrowISO()) return false;
+      if (f === "overdue" && o.status.tone !== "overdue") return false;
+      if (f === "ready" && o.orderType !== "ready") return false;
+      if (f === "custom" && o.orderType !== "custom") return false;
+      if (f === "pickup" && o.fulfillment !== "Самовывоз") return false;
+      if (f === "delivery" && o.fulfillment !== "Доставка") return false;
+      if (f === "sold" && o.stage !== "sold") return false;
+      if (f === "rejected" && o.stage !== "rejected") return false;
+    }
+    return true;
+  };
+
+  const q = search.trim().toLowerCase();
+  const filteredOrders = orders.filter(o => {
+    if (!matchesFilters(o)) return false;
+    if (!q) return true;
+    return (o.clientName || "").toLowerCase().includes(q)
+      || (o.phone || "").toLowerCase().includes(q)
+      || (o.product || "").toLowerCase().includes(q);
+  });
+
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
-          <h1 className="font-display text-2xl font-semibold mb-1">Заказы</h1>
-          <p className="text-[#8B6F5C] text-sm">От создания заказа до выдачи клиенту</p>
+          <h1 className="font-display text-2xl font-semibold mb-1">Продажи</h1>
+          <p className="text-[#8B6F5C] text-sm">От заявки до продажи готовой продукции или заказа на торт</p>
         </div>
         <button onClick={() => setShowForm(v => !v)}
           className="flex items-center gap-1.5 bg-rose-600 hover:bg-rose-500 text-white font-medium text-sm px-4 py-2 rounded-lg transition">
-          <Plus className="w-4 h-4" /> Новый заказ
+          <Plus className="w-4 h-4" /> Новая продажа
         </button>
       </div>
 
       {showForm && (
         <form onSubmit={submit} className="bg-white border border-[#F0DFCF] rounded-2xl p-4 mb-6 grid sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2 flex gap-2 mb-1">
+            {ORDER_TYPES.map(t => (
+              <button key={t.id} type="button" onClick={() => setForm(f => ({ ...f, orderType: t.id }))}
+                className={`text-xs px-3 py-1.5 rounded-lg border font-medium ${form.orderType === t.id ? "bg-rose-50 border-rose-200 text-rose-700" : "border-[#F0DFCF] text-[#8B6F5C]"}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+
           <div className="sm:col-span-2 flex gap-2 mb-1">
             <button type="button" onClick={() => setUseExisting(true)}
               className={`text-xs px-3 py-1.5 rounded-lg border ${useExisting ? "bg-rose-50 border-rose-200 text-rose-700" : "border-[#F0DFCF] text-[#8B6F5C]"}`}>Существующий клиент</button>
@@ -437,7 +509,7 @@ function OrdersBoard({ orders, clients, addOrder, moveOrder, deleteOrder }) {
             </>
           )}
 
-          <input required placeholder="Название изделия (напр. Торт «Красный бархат»)" value={form.product}
+          <input required placeholder="Наименование товара" value={form.product}
             onChange={e => setForm(f => ({ ...f, product: e.target.value }))}
             className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
           <select value={form.productType} onChange={e => setForm(f => ({ ...f, productType: e.target.value }))}
@@ -447,15 +519,39 @@ function OrdersBoard({ orders, clients, addOrder, moveOrder, deleteOrder }) {
           <input placeholder="Вес / размер / кол-во" value={form.size}
             onChange={e => setForm(f => ({ ...f, size: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
-          <input placeholder="Начинка / вкус" value={form.filling}
-            onChange={e => setForm(f => ({ ...f, filling: e.target.value }))}
-            className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
-          <input type="number" placeholder="Цена, ₸" value={form.price}
+          <input type="number" placeholder="Общая стоимость, ₸" value={form.price}
             onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
-          <input type="number" placeholder="Предоплата, ₸" value={form.prepaid}
+          <input type="number" placeholder="Сумма оплаты, ₸" value={form.prepaid}
             onChange={e => setForm(f => ({ ...f, prepaid: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+          <input placeholder="Ответственный менеджер" value={form.responsibleManager}
+            onChange={e => setForm(f => ({ ...f, responsibleManager: e.target.value }))}
+            className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+
+          {form.orderType === "custom" && (
+            <>
+              <input placeholder="Начинка" value={form.filling}
+                onChange={e => setForm(f => ({ ...f, filling: e.target.value }))}
+                className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              <input placeholder="Дизайн" value={form.design}
+                onChange={e => setForm(f => ({ ...f, design: e.target.value }))}
+                className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              <input placeholder="Надпись на торте" value={form.inscription}
+                onChange={e => setForm(f => ({ ...f, inscription: e.target.value }))}
+                className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              <input type="date" placeholder="Дата мероприятия" value={form.eventDate}
+                onChange={e => setForm(f => ({ ...f, eventDate: e.target.value }))}
+                className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              <input placeholder="Ссылка на референс/фото" value={form.referencePhotoUrl}
+                onChange={e => setForm(f => ({ ...f, referencePhotoUrl: e.target.value }))}
+                className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              <textarea placeholder="Пожелания клиента" value={form.clientWishes}
+                onChange={e => setForm(f => ({ ...f, clientWishes: e.target.value }))} rows={2}
+                className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400 resize-none" />
+            </>
+          )}
+
           <select value={form.fulfillment} onChange={e => setForm(f => ({ ...f, fulfillment: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400">
             {FULFILLMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
@@ -463,70 +559,142 @@ function OrdersBoard({ orders, clients, addOrder, moveOrder, deleteOrder }) {
           {form.fulfillment === "Доставка" && (
             <input placeholder="Адрес доставки" value={form.address}
               onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
-              className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
+              className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
           )}
           <input type="date" value={form.dueDate} onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
           <input type="time" value={form.dueTime} onChange={e => setForm(f => ({ ...f, dueTime: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
-          <textarea placeholder="Комментарий: надпись на торте, макет, пожелания" value={form.comment}
+          <textarea placeholder="Комментарий" value={form.comment}
             onChange={e => setForm(f => ({ ...f, comment: e.target.value }))} rows={2}
             className="sm:col-span-2 bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400 resize-none" />
-          <button className="sm:col-span-2 bg-rose-600 hover:bg-rose-500 text-white font-medium py-2 rounded-lg text-sm">Создать заказ</button>
+          <button className="sm:col-span-2 bg-rose-600 hover:bg-rose-500 text-white font-medium py-2 rounded-lg text-sm">Создать</button>
         </form>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-        {ORDER_STAGES.map((stage, stageIdx) => (
-          <div key={stage.id} className="bg-white/60 border border-[#F0DFCF] rounded-2xl p-3 min-h-[200px]">
+      <div className="flex items-center gap-2 bg-white border border-[#F0DFCF] rounded-lg px-3 py-2 mb-3">
+        <Search className="w-4 h-4 text-[#8B6F5C] shrink-0" />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Поиск по имени, телефону, товару"
+          className="flex-1 bg-transparent text-sm outline-none" />
+      </div>
+      <div className="flex flex-wrap gap-1.5 mb-5">
+        {ORDER_FILTERS.map(f => (
+          <button key={f.id} onClick={() => toggleFilter(f.id)}
+            className={`text-xs px-2.5 py-1 rounded-full border transition ${activeFilters.has(f.id) ? "bg-rose-50 border-rose-200 text-rose-700" : "bg-white border-[#F0DFCF] text-[#8B6F5C] hover:border-[#E0C9AE]"}`}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {KANBAN_STAGE_ORDER.map(stageId => (
+          <div key={stageId} className="bg-white/60 border border-[#F0DFCF] rounded-2xl p-3 min-h-[200px]">
             <div className="flex items-center justify-between mb-3 px-1">
-              <span className="text-xs font-semibold uppercase tracking-wide text-[#8B6F5C]">{stage.label}</span>
-              <span className="text-xs text-[#8B6F5C]">{orders.filter(o => o.stage === stage.id).length}</span>
+              <span className={`text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${STAGE_COLORS[stageId]}`}>{STAGE_LABELS[stageId]}</span>
+              <span className="text-xs text-[#8B6F5C]">{filteredOrders.filter(o => o.stage === stageId).length}</span>
             </div>
             <div className="space-y-2">
-              {orders.filter(o => o.stage === stage.id).map(order => (
-                <div key={order.id} className={`bg-white border rounded-xl p-3 group ${order.status.tone === "overdue" ? "border-rose-300" : "border-[#F0DFCF]"}`}>
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-medium leading-snug">{order.clientName}</p>
-                    <button onClick={() => deleteOrder(order.id)} className="opacity-0 group-hover:opacity-100 text-[#C9BBA8] hover:text-rose-500 transition shrink-0">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <p className="text-xs text-[#8B6F5C] mt-1">{order.product}</p>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className={`text-xs px-1.5 py-0.5 rounded border ${TONE_STYLES[order.status.tone]}`}>{order.status.label}</span>
-                  </div>
-                  <p className="text-xs text-rose-600 font-medium mt-1.5">{fmtMoney(order.price)}{order.prepaid > 0 && <span className="text-[#8B6F5C] font-normal"> · предоплата {fmtMoney(order.prepaid)}</span>}</p>
-                  <p className="text-xs text-[#8B6F5C] mt-1 flex items-center gap-1">
-                    {order.fulfillment === "Доставка" ? <Truck className="w-3 h-3" /> : <Store className="w-3 h-3" />}
-                    {order.fulfillment === "Доставка" ? order.address : "Самовывоз"}
-                  </p>
-                  <div className="flex items-center justify-between mt-2.5">
-                    <div className="flex gap-1">
-                      {stageIdx > 0 && (
-                        <button onClick={() => moveOrder(order.id, -1)} className="text-xs text-[#C9BBA8] hover:text-[#8B6F5C] px-1">←</button>
+              {filteredOrders.filter(o => o.stage === stageId).map(order => {
+                const remaining = (order.price || 0) - (order.prepaid || 0);
+                const availableStages = getAvailableStages(order.orderType);
+                return (
+                  <div key={order.id} className={`bg-white border rounded-xl p-3 group ${order.status.tone === "overdue" ? "border-rose-300" : "border-[#F0DFCF]"}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-sm font-medium leading-snug">{order.clientName}</p>
+                      <button onClick={() => deleteOrder(order.id)} className="opacity-0 group-hover:opacity-100 text-[#C9BBA8] hover:text-rose-500 transition shrink-0">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-[#8B6F5C] mt-1">{order.product}</p>
+                    <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded mt-1.5 border ${order.orderType === "custom" ? "bg-violet-50 border-violet-200 text-violet-700" : "bg-slate-50 border-slate-200 text-slate-600"}`}>
+                      {orderTypeLabel(order.orderType)}
+                    </span>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className={`text-xs px-1.5 py-0.5 rounded border ${TONE_STYLES[order.status.tone]}`}>{order.status.label}</span>
+                    </div>
+                    <p className="text-xs mt-1.5">
+                      <span className="text-rose-600 font-medium">{fmtMoney(order.price)}</span>
+                      <span className="text-[#8B6F5C]"> · оплачено {fmtMoney(order.prepaid)}</span>
+                      {remaining > 0 && <span className="text-amber-600"> · остаток {fmtMoney(remaining)}</span>}
+                    </p>
+                    <p className="text-xs text-[#8B6F5C] mt-1 flex items-center gap-1">
+                      {order.fulfillment === "Доставка" ? <Truck className="w-3 h-3" /> : <Store className="w-3 h-3" />}
+                      {order.fulfillment === "Доставка" ? order.address : "Самовывоз"} · {fmtDateShort(order.dueDate)} {order.dueTime}
+                    </p>
+                    {order.rejectionReason && (
+                      <p className="text-xs text-slate-500 mt-1">Причина: {order.rejectionReason}{order.rejectionComment ? ` — ${order.rejectionComment}` : ""}</p>
+                    )}
+                    <div className="flex items-center justify-between mt-2.5 gap-2">
+                      {order.phone && (
+                        <a href={waLink(order.phone)} target="_blank" rel="noreferrer"
+                          className="flex items-center gap-1 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg hover:bg-emerald-100 shrink-0">
+                          <MessageCircle className="w-3 h-3" /> WhatsApp
+                        </a>
                       )}
-                      {stageIdx < ORDER_STAGES.length - 1 && (
-                        <button onClick={() => moveOrder(order.id, 1)} className="text-xs text-rose-600 hover:text-rose-500 flex items-center gap-0.5">
-                          Далее <ArrowRight className="w-3 h-3" />
-                        </button>
+                      {!TERMINAL_STAGES.includes(order.stage) && (
+                        <select value={order.stage}
+                          onChange={e => {
+                            if (e.target.value === "rejected") setRejectingOrder(order);
+                            else setOrderStage(order.id, e.target.value);
+                          }}
+                          className="flex-1 text-xs bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-2 py-1 outline-none focus:border-rose-400">
+                          {availableStages.map(s => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+                        </select>
                       )}
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}
       </div>
+
+      {rejectingOrder && (
+        <RejectModal order={rejectingOrder} onClose={() => setRejectingOrder(null)}
+          onConfirm={(reason, comment) => { rejectOrder(rejectingOrder.id, reason, comment); setRejectingOrder(null); }} />
+      )}
+    </div>
+  );
+}
+
+function RejectModal({ order, onClose, onConfirm }) {
+  const [reason, setReason] = useState(REJECTION_REASONS[0]);
+  const [comment, setComment] = useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    onConfirm(reason, reason === "Другое" ? comment : "");
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center p-6 z-50">
+      <form onSubmit={submit} className="bg-white rounded-2xl p-5 w-full max-w-sm border border-[#F0DFCF]">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-display font-semibold text-lg">Причина отказа</h3>
+          <button type="button" onClick={onClose} className="text-[#8B6F5C] hover:text-[#3B2417]"><X className="w-4 h-4" /></button>
+        </div>
+        <p className="text-xs text-[#8B6F5C] mb-3">{order.clientName} · {order.product}</p>
+        <select required value={reason} onChange={e => setReason(e.target.value)}
+          className="w-full bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400 mb-3">
+          {REJECTION_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+        </select>
+        {reason === "Другое" && (
+          <textarea required placeholder="Комментарий" value={comment} onChange={e => setComment(e.target.value)} rows={2}
+            className="w-full bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400 mb-3 resize-none" />
+        )}
+        <button className="w-full bg-rose-600 hover:bg-rose-500 text-white font-medium py-2 rounded-lg text-sm">Подтвердить отказ</button>
+      </form>
     </div>
   );
 }
 
 // ================= Deliveries (day agenda) =================
-function DeliveriesView({ orders, markDelivered }) {
+function DeliveriesView({ orders, setOrderStage }) {
   const [selectedDate, setSelectedDate] = useState(todayISO());
-  const dayOrders = orders.filter(o => o.dueDate === selectedDate && o.stage !== "completed").sort((a, b) => (a.dueTime || "").localeCompare(b.dueTime || ""));
+  const dayOrders = orders
+    .filter(o => o.fulfillment === "Доставка" && o.stage !== "rejected" && o.dueDate === selectedDate && !TERMINAL_STAGES.includes(o.stage))
+    .sort((a, b) => (a.dueTime || "").localeCompare(b.dueTime || ""));
   const shiftDate = (delta) => {
     const d = new Date(selectedDate);
     d.setDate(d.getDate() + delta);
@@ -537,8 +705,8 @@ function DeliveriesView({ orders, markDelivered }) {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="font-display text-2xl font-semibold mb-1">Доставки и самовывоз</h1>
-        <p className="text-[#8B6F5C] text-sm">План выдачи заказов на день</p>
+        <h1 className="font-display text-2xl font-semibold mb-1">Доставки</h1>
+        <p className="text-[#8B6F5C] text-sm">План доставок на день (самовывоз сюда не попадает)</p>
       </div>
 
       <div className="flex items-center gap-3 mb-5">
@@ -549,11 +717,11 @@ function DeliveriesView({ orders, markDelivered }) {
           {isToday && <span className="text-xs text-rose-600 font-medium">Сегодня</span>}
         </div>
         <button onClick={() => shiftDate(1)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-white border border-[#F0DFCF] text-[#8B6F5C] hover:text-[#3B2417]">→</button>
-        <span className="text-sm text-[#8B6F5C] ml-1">{dayOrders.length} заказ(ов) к выдаче</span>
+        <span className="text-sm text-[#8B6F5C] ml-1">{dayOrders.length} доставок(и)</span>
       </div>
 
       {dayOrders.length === 0 ? (
-        <div className="text-center py-16 text-[#8B6F5C] text-sm">На этот день выдач не запланировано.</div>
+        <div className="text-center py-16 text-[#8B6F5C] text-sm">На этот день доставок не запланировано.</div>
       ) : (
         <div className="space-y-2.5">
           {dayOrders.map(o => (
@@ -565,15 +733,22 @@ function DeliveriesView({ orders, markDelivered }) {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-medium">{o.clientName}</p>
-                    <button onClick={() => markDelivered(o.id)} className="flex items-center gap-1 text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-lg hover:bg-emerald-100 shrink-0">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Выдано
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {o.phone && (
+                        <a href={waLink(o.phone)} target="_blank" rel="noreferrer"
+                          className="flex items-center gap-1 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-lg hover:bg-emerald-100">
+                          <MessageCircle className="w-3.5 h-3.5" />
+                        </a>
+                      )}
+                      <button onClick={() => setOrderStage(o.id, "sold")} className="flex items-center gap-1 text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-lg hover:bg-emerald-100">
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Продано
+                      </button>
+                    </div>
                   </div>
-                  <p className="text-xs text-[#8B6F5C] mt-1">{o.product} {o.size && `· ${o.size}`}</p>
-                  <p className="text-xs text-[#8B6F5C] mt-1 flex items-center gap-1">
-                    {o.fulfillment === "Доставка" ? <Truck className="w-3 h-3" /> : <Store className="w-3 h-3" />}
-                    {o.fulfillment === "Доставка" ? o.address : "Самовывоз из магазина"}
-                  </p>
+                  <p className="text-xs text-[#8B6F5C] mt-1">{o.product} {o.size && `· ${o.size}`} · {fmtMoney(o.price)}</p>
+                  <p className="text-xs text-[#8B6F5C] mt-1 flex items-center gap-1"><MapPin className="w-3 h-3" /> {o.address}</p>
+                  {o.phone && <p className="text-xs text-[#8B6F5C] mt-1 flex items-center gap-1"><Phone className="w-3 h-3" /> {o.phone}</p>}
+                  <span className={`inline-block text-xs px-1.5 py-0.5 rounded border mt-1.5 ${STAGE_COLORS[o.stage]}`}>{STAGE_LABELS[o.stage]}</span>
                   {o.comment && <p className="text-xs text-[#8B6F5C] mt-1.5 italic">«{o.comment}»</p>}
                 </div>
               </div>
@@ -680,6 +855,25 @@ function ClientsView({ clients, orders, updateClient, deleteClient, showToast })
               {client.notes && <span className="text-[#8B6F5C]">{client.notes}</span>}
             </div>
           )}
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mb-5">
+            <div className="bg-white border border-[#F0DFCF] rounded-xl p-3">
+              <p className="text-xs text-[#8B6F5C]">Заказов</p>
+              <p className="font-display text-lg font-semibold">{client.orderCount || 0}</p>
+            </div>
+            <div className="bg-white border border-[#F0DFCF] rounded-xl p-3">
+              <p className="text-xs text-[#8B6F5C]">Сумма покупок</p>
+              <p className="font-display text-lg font-semibold">{fmtMoney(client.totalSpent)}</p>
+            </div>
+            <div className="bg-white border border-[#F0DFCF] rounded-xl p-3">
+              <p className="text-xs text-[#8B6F5C]">Средний чек</p>
+              <p className="font-display text-lg font-semibold">{fmtMoney(client.averageCheck)}</p>
+            </div>
+            <div className="bg-white border border-[#F0DFCF] rounded-xl p-3">
+              <p className="text-xs text-[#8B6F5C]">Последний заказ</p>
+              <p className="text-sm font-medium mt-0.5 truncate">{client.lastOrderProduct || "—"}</p>
+            </div>
+          </div>
 
           <p className="text-xs font-semibold uppercase tracking-wide text-[#8B6F5C] mb-2">История заказов</p>
           {clientOrders.length === 0 ? (
