@@ -1,87 +1,46 @@
-from sqlalchemy import Column, String, Float
-from database import Base
+// Единый конфиг типов и статусов заказа — источник правды для всего
+// фронтенда (Kanban, Dashboard, формы). Совпадает по смыслу с
+// backend/order_config.py. Если меняете статусы — правьте оба файла.
 
+export const ORDER_TYPES = [
+  { id: "ready", label: "Готовый товар" },
+  { id: "custom", label: "На заказ" },
+];
+export const orderTypeLabel = (t) => ORDER_TYPES.find(x => x.id === t)?.label || t;
 
-class Client(Base):
-    __tablename__ = "clients"
+export const STAGE_LABELS = {
+  new: "Новый заказ",
+  discussion: "Согласование",
+  payment_pending: "Ожидаем оплату",
+  cooking: "Готовится",
+  ready_to_pickup: "Готов к выдаче",
+  sold: "Продано",
+  rejected: "Отказ",
+};
 
-    id = Column(String, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    phone = Column(String, default="")
-    birthday = Column(String, default="")  # "" or "YYYY-MM-DD"
-    notes = Column(String, default="")
-    source = Column(String, default="shop")  # "shop" | "delivery" | "both"
-    created_at = Column(String)
+export const READY_ORDER_STAGES = ["new", "discussion", "payment_pending", "sold", "rejected"];
+export const CUSTOM_ORDER_STAGES = ["new", "discussion", "payment_pending", "cooking", "ready_to_pickup", "sold", "rejected"];
+export const TERMINAL_STAGES = ["sold", "rejected"];
 
+// Порядок колонок канбана — суперсет обоих типов заказа
+export const KANBAN_STAGE_ORDER = ["new", "discussion", "payment_pending", "cooking", "ready_to_pickup", "sold", "rejected"];
 
-class Order(Base):
-    __tablename__ = "orders"
+export const REJECTION_REASONS = [
+  "Дорого", "Не устроил ассортимент", "Не подошла дата",
+  "Клиент не отвечает", "Купил у конкурента", "Передумал", "Другое",
+];
 
-    id = Column(String, primary_key=True, index=True)
-    client_id = Column(String, nullable=False)
-    client_name = Column(String, default="")
-    phone = Column(String, default="")
-    product = Column(String)
-    product_type = Column(String, default="Торт на заказ")
-    size = Column(String, default="")
-    filling = Column(String, default="")
-    price = Column(Float, default=0)
-    prepaid = Column(Float, default=0)
-    fulfillment = Column(String, default="Самовывоз")  # "Самовывоз" | "Доставка"
-    address = Column(String, default="")
-    due_date = Column(String)  # "YYYY-MM-DD"
-    due_time = Column(String, default="")  # "HH:MM"
-    comment = Column(String, default="")
-    stage = Column(String, default="new")
-    created_at = Column(String)
-    stage_changed_at = Column(String)
+export function getAvailableStages(orderType) {
+  return orderType === "custom" ? CUSTOM_ORDER_STAGES : READY_ORDER_STAGES;
+}
 
-    # ---- новые поля ----
-    order_type = Column(String, default="ready")  # "ready" | "custom"
-    responsible_manager = Column(String, default="")
-
-    # поля только для order_type == "custom"
-    event_date = Column(String, default="")
-    design = Column(String, default="")
-    inscription = Column(String, default="")
-    reference_photo_url = Column(String, default="")
-    client_wishes = Column(String, default="")
-
-    # причина отказа
-    rejection_reason = Column(String, default="")
-    rejection_comment = Column(String, default="")
-    rejected_at = Column(String, default="")
-
-
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(String, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True, nullable=False)
-    password_hash = Column(String, nullable=False)
-    full_name = Column(String, default="")
-    role = Column(String, default="manager")  # "manager" | "rop" | "director"
-
-
-class Lead(Base):
-    __tablename__ = "leads"
-
-    id = Column(String, primary_key=True, index=True)
-    name = Column(String, default="")
-    phone = Column(String, default="")  # используется как chatId для сопоставления с Wazzup
-    channel = Column(String, default="whatsapp")  # whatsapp | instagram | call | other
-    stage = Column(String, default="new")  # new | chatting | agreed | converted
-    last_message = Column(String, default="")
-    last_message_at = Column(String, default="")
-    client_id = Column(String, default="")  # заполняется при конвертации в клиента
-    created_at = Column(String)
-
-
-class LeadMessage(Base):
-    __tablename__ = "lead_messages"
-
-    id = Column(String, primary_key=True, index=True)
-    lead_id = Column(String, nullable=False)
-    direction = Column(String, default="in")  # "in" (от клиента) | "out" (наш ответ)
-    text = Column(String, default="")
-    created_at = Column(String)
+// Спокойные цвета по статусу — для бейджа этапа на карточке/колонке
+export const STAGE_COLORS = {
+  new: "text-sky-700 bg-sky-50 border-sky-200",
+  discussion: "text-violet-700 bg-violet-50 border-violet-200",
+  payment_pending: "text-amber-700 bg-amber-50 border-amber-200",
+  cooking: "text-orange-700 bg-orange-50 border-orange-200",
+  ready_to_pickup: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  sold: "text-emerald-700 bg-emerald-50 border-emerald-200",
+  rejected: "text-slate-600 bg-slate-100 border-slate-300",
+};
