@@ -422,7 +422,13 @@ function OrdersBoard({ orders, clients, addOrder, setOrderStage, rejectOrder, de
     if (!form.product.trim()) return;
     if (useExisting && !form.clientId) return;
     if (!useExisting && !form.newClientName.trim()) return;
-    addOrder({ ...form, clientId: useExisting ? form.clientId : null });
+    if (!form.price || Number(form.price) <= 0) return;
+    addOrder({
+      ...form,
+      clientId: useExisting ? form.clientId : null,
+      price: Number(form.price),
+      prepaid: Number(form.prepaid) || 0,
+    });
     setForm(emptyOrderForm(clients));
     setShowForm(false);
   };
@@ -519,7 +525,7 @@ function OrdersBoard({ orders, clients, addOrder, setOrderStage, rejectOrder, de
           <input placeholder="Вес / размер / кол-во" value={form.size}
             onChange={e => setForm(f => ({ ...f, size: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
-          <input type="number" placeholder="Общая стоимость, ₸" value={form.price}
+          <input required type="number" min="1" placeholder="Общая стоимость, ₸ *" value={form.price}
             onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
             className="bg-[#FBF3EC] border border-[#F0DFCF] rounded-lg px-3 py-2 text-sm outline-none focus:border-rose-400" />
           <input type="number" placeholder="Сумма оплаты, ₸" value={form.prepaid}
