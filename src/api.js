@@ -79,6 +79,8 @@ export const api = {
     request("/api/orders", { method: "POST", body: JSON.stringify(toSnake(payload)) }),
   updateOrder: (id, payload) =>
     request(`/api/orders/${id}`, { method: "PUT", body: JSON.stringify(toSnake(payload)) }),
+  rejectOrder: (id, reason, comment) =>
+    request(`/api/orders/${id}/reject`, { method: "POST", body: JSON.stringify({ reason, comment }) }),
   deleteOrder: (id) => request(`/api/orders/${id}`, { method: "DELETE" }),
   updateClient: (id, payload) =>
     request(`/api/clients/${id}`, { method: "PUT", body: JSON.stringify(toSnake(payload)) }),
